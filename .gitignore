@@ -1,0 +1,8 @@
+models/
+vendor/
+bin/
+web/recall.wasm
+.DS_Store
+.recall/
+*.test
+*.out
