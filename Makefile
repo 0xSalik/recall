@@ -1,15 +1,14 @@
-.PHONY: build test bench wasm clean models
+.PHONY: build build-ui test bench clean models
 
-build:
+build: build-ui
 	go build -o bin/recall .
 
-wasm:
-	GOOS=js GOARCH=wasm go build -o web/recall.wasm ./web/
-	@if [ -f "$$(go env GOROOT)/lib/wasm/wasm_exec.js" ]; then \
-		cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" web/; \
-	else \
-		cp "$$(go env GOROOT)/misc/wasm/wasm_exec.js" web/; \
-	fi
+# The browser UI is a single static file embedded via go:embed (see web/web.go).
+# There is no separate frontend build step; this target validates that the
+# embedded asset is present so `go build` will succeed.
+build-ui:
+	@test -f web/index.html || { echo "web/index.html missing"; exit 1; }
+	@echo "ui: web/index.html ready (embedded at build time)"
 
 test:
 	go test ./...
@@ -19,7 +18,7 @@ bench:
 	go run ./cmd/bench
 
 clean:
-	rm -rf bin/ web/recall.wasm
+	rm -rf bin/
 
 models:
 	mkdir -p models

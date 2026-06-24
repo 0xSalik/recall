@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>recall</title>
+<style>
+  :root {
+    --bg: #0d1017;
+    --panel: #151a23;
+    --border: #232a36;
+    --fg: #d8dee9;
+    --muted: #7a8290;
+    --accent: #7aa2f7;
+    --accent-dim: #2a3450;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  #app { max-width: 820px; margin: 0 auto; padding: 32px 20px 80px; }
+  header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 24px;
+  }
+  h1 { font-size: 20px; margin: 0; letter-spacing: 1px; }
+  h1::before { content: "› "; color: var(--accent); }
+  #status { color: var(--muted); font-size: 12px; }
+  #search { display: flex; flex-direction: column; gap: 10px; }
+  textarea {
+    width: 100%; resize: vertical; background: var(--panel); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 12px;
+    font: inherit; outline: none;
+  }
+  textarea:focus { border-color: var(--accent-dim); }
+  .row { display: flex; gap: 10px; align-items: center; }
+  button {
+    background: var(--accent-dim); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 9px 18px; font: inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  label.k { color: var(--muted); font-size: 12px; }
+  input[type=number] {
+    width: 56px; background: var(--panel); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px; font: inherit;
+  }
+  #answer {
+    margin-top: 28px; white-space: pre-wrap; min-height: 1em;
+    border-left: 2px solid var(--accent-dim); padding-left: 16px;
+  }
+  #answer.empty { color: var(--muted); border-color: var(--border); }
+  .cursor::after { content: "▋"; color: var(--accent); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  #sources { margin-top: 28px; }
+  #sources h2 { font-size: 12px; text-transform: uppercase; color: var(--muted); letter-spacing: 1px; }
+  .source {
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 8px 12px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; margin-bottom: 6px;
+  }
+  .source .path { word-break: break-all; }
+  .badge {
+    flex: none; color: var(--accent); border: 1px solid var(--accent-dim);
+    border-radius: 4px; padding: 1px 8px; font-size: 12px; height: fit-content;
+  }
+</style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>recall</h1>
+      <span id="status">connecting…</span>
+    </header>
+    <div id="search">
+      <textarea id="question" rows="3" placeholder="Ask anything about your files…"></textarea>
+      <div class="row">
+        <button id="submit">Search</button>
+        <label class="k">chunks (k): <input id="k" type="number" min="1" max="20" value="5" /></label>
+      </div>
+    </div>
+    <div id="answer" class="empty">Answers stream here as the model generates them.</div>
+    <div id="sources"></div>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const answerEl = $("answer");
+const sourcesEl = $("sources");
+const submitEl = $("submit");
+
+async function refreshStatus() {
+  try {
+    const r = await fetch("/status");
+    const s = await r.json();
+    $("status").textContent = `${s.files} files · ${s.chunks} chunks`;
+  } catch {
+    $("status").textContent = "server unavailable";
+  }
+}
+
+function renderSources(sources) {
+  sourcesEl.innerHTML = "";
+  if (!sources || !sources.length) return;
+  const h = document.createElement("h2");
+  h.textContent = "Sources";
+  sourcesEl.appendChild(h);
+  for (const s of sources) {
+    const div = document.createElement("div");
+    div.className = "source";
+    const path = document.createElement("span");
+    path.className = "path";
+    path.textContent = s.page > 0 ? `${s.source}, page ${s.page}` : s.source;
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = s.score.toFixed(2);
+    div.append(path, badge);
+    sourcesEl.appendChild(div);
+  }
+}
+
+// Parse a growing SSE buffer, returning [events, remainder]. Events are
+// separated by a blank line; we only care about "data:" lines.
+function parseSSE(buffer) {
+  const events = [];
+  let idx;
+  while ((idx = buffer.indexOf("\n\n")) !== -1) {
+    const raw = buffer.slice(0, idx);
+    buffer = buffer.slice(idx + 2);
+    for (const line of raw.split("\n")) {
+      if (line.startsWith("data:")) {
+        const json = line.slice(5).trim();
+        if (json) { try { events.push(JSON.parse(json)); } catch {} }
+      }
+    }
+  }
+  return [events, buffer];
+}
+
+async function ask() {
+  const question = $("question").value.trim();
+  if (!question) return;
+  const k = parseInt($("k").value, 10) || 5;
+
+  submitEl.disabled = true;
+  sourcesEl.innerHTML = "";
+  answerEl.classList.remove("empty");
+  answerEl.classList.add("cursor");
+  answerEl.textContent = "";
+
+  try {
+    const resp = await fetch("/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
+      body: JSON.stringify({ question, k }),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let events;
+      [events, buffer] = parseSSE(buffer);
+      for (const ev of events) {
+        if (ev.error) { answerEl.textContent += `\n[error: ${ev.error}]`; continue; }
+        if (ev.done) { renderSources(ev.sources); }
+        else if (ev.token) { answerEl.textContent += ev.token; }
+      }
+    }
+  } catch (e) {
+    answerEl.textContent = `request failed: ${e}`;
+  } finally {
+    answerEl.classList.remove("cursor");
+    submitEl.disabled = false;
+  }
+}
+
+submitEl.addEventListener("click", ask);
+$("question").addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") ask();
+});
+refreshStatus();
+</script>
+</body>
+</html>
