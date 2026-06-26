@@ -49,7 +49,7 @@ func newHNSWSeeded(dims int, seed int64) *HNSW {
 		M:          m,
 		Mmax0:      2 * m,
 		efConst:    200,
-		efSearch:   64,
+		efSearch:   100,
 		ml:         1.0 / math.Log(float64(m)),
 		dims:       dims,
 		rng:        rand.New(rand.NewSource(seed)),
@@ -57,6 +57,33 @@ func newHNSWSeeded(dims int, seed int64) *HNSW {
 }
 
 func (h *HNSW) Len() int { return len(h.nodes) }
+
+// visitedSet is an O(1)-reset visited marker: a node is "visited" when its stamp
+// equals the current epoch. Reusing one set across a search avoids the
+// allocation churn of a fresh map per layer. Not safe for concurrent use; each
+// search/insert owns its own set.
+type visitedSet struct {
+	stamp []uint32
+	epoch uint32
+}
+
+func (v *visitedSet) reset(n int) {
+	if cap(v.stamp) < n {
+		v.stamp = make([]uint32, n)
+	} else {
+		v.stamp = v.stamp[:n]
+	}
+	v.epoch++
+	if v.epoch == 0 { // wrapped around; clear and restart
+		for i := range v.stamp {
+			v.stamp[i] = 0
+		}
+		v.epoch = 1
+	}
+}
+
+func (v *visitedSet) test(i int) bool { return v.stamp[i] == v.epoch }
+func (v *visitedSet) set(i int)        { v.stamp[i] = v.epoch }
 
 // distance is cosine distance for unit vectors: 1 - dot. Smaller is closer.
 func (h *HNSW) distance(a, b []float32) float32 {
@@ -101,6 +128,7 @@ func (h *HNSW) Add(id string, vec []float32, chunkIdx int) error {
 	}
 
 	ep := h.entryPoint
+	vs := &visitedSet{}
 	// Phase 1: greedily descend from the top down to level+1 with ef=1.
 	for lc := h.maxLayer; lc > level; lc-- {
 		ep = h.greedyClosest(cp, ep, lc)
@@ -113,12 +141,12 @@ func (h *HNSW) Add(id string, vec []float32, chunkIdx int) error {
 		start = level
 	}
 	for lc := start; lc >= 0; lc-- {
-		candidates := h.searchLayer(cp, []int{ep}, h.efConst, lc)
+		candidates := h.searchLayer(cp, []int{ep}, h.efConst, lc, vs)
 		mmax := h.M
 		if lc == 0 {
 			mmax = h.Mmax0
 		}
-		neighbors := selectNeighbors(candidates, h.M)
+		neighbors := h.selectNeighborsHeuristic(cp, candidates, h.M)
 		n.Layers[lc] = neighbors
 
 		// Add reverse edges and prune overflowing neighbor lists.
@@ -172,17 +200,16 @@ func (h *HNSW) neighbors(idx, layer int) []int {
 }
 
 // searchLayer runs the ef-bounded beam search at a single layer, returning the
-// best results sorted ascending by distance (closest first).
-func (h *HNSW) searchLayer(q []float32, entries []int, ef, layer int) []candidate {
-	visited := make(map[int]bool, ef*2)
+// best results sorted ascending by distance (closest first). The caller-owned
+// visitedSet avoids per-call map allocation, which dominates search cost.
+func (h *HNSW) searchLayer(q []float32, entries []int, ef, layer int, vs *visitedSet) []candidate {
+	vs.reset(len(h.nodes))
 	cand := &minHeap{}
 	result := &maxHeap{}
-	heap.Init(cand)
-	heap.Init(result)
 
 	for _, e := range entries {
 		d := h.distance(q, h.nodes[e].Vec)
-		visited[e] = true
+		vs.set(e)
 		heap.Push(cand, candidate{node: e, dist: d})
 		heap.Push(result, candidate{node: e, dist: d})
 	}
@@ -195,10 +222,10 @@ func (h *HNSW) searchLayer(q []float32, entries []int, ef, layer int) []candidat
 			break
 		}
 		for _, nb := range h.neighbors(c.node, layer) {
-			if visited[nb] {
+			if vs.test(nb) {
 				continue
 			}
-			visited[nb] = true
+			vs.set(nb)
 			d := h.distance(q, h.nodes[nb].Vec)
 			if result.Len() < ef || d < (*result)[0].dist {
 				heap.Push(cand, candidate{node: nb, dist: d})
@@ -217,29 +244,63 @@ func (h *HNSW) searchLayer(q []float32, entries []int, ef, layer int) []candidat
 	return out // ascending by distance
 }
 
-// selectNeighbors keeps the m closest candidates (simple heuristic).
-func selectNeighbors(candidates []candidate, m int) []int {
-	if len(candidates) > m {
-		candidates = candidates[:m]
+// selectNeighborsHeuristic implements the HNSW neighbor-selection heuristic
+// (Malkov & Yashunin, Algorithm 4). Walking candidates from nearest to the
+// reference point outward, it keeps a candidate only if that candidate is
+// closer to the reference than to any already-selected neighbor. This favors
+// edges that span different "directions", keeping the graph navigable and
+// markedly improving recall over naively keeping the m closest. candidates must
+// be sorted ascending by dist (distance to ref).
+func (h *HNSW) selectNeighborsHeuristic(ref []float32, candidates []candidate, m int) []int {
+	R := make([]int, 0, m)
+	for _, c := range candidates {
+		if len(R) >= m {
+			break
+		}
+		keep := true
+		for _, r := range R {
+			// If c is nearer to an already-chosen neighbor than to ref, the edge
+			// is redundant; skip it.
+			if h.distance(h.nodes[c.node].Vec, h.nodes[r].Vec) < c.dist {
+				keep = false
+				break
+			}
+		}
+		if keep {
+			R = append(R, c.node)
+		}
 	}
-	out := make([]int, len(candidates))
-	for i, c := range candidates {
-		out[i] = c.node
+	// If the heuristic discarded too many, top up with the closest remaining
+	// candidates so we don't under-connect (which would hurt connectivity).
+	if len(R) < m {
+		inR := make(map[int]bool, len(R))
+		for _, r := range R {
+			inR[r] = true
+		}
+		for _, c := range candidates {
+			if len(R) >= m {
+				break
+			}
+			if !inR[c.node] {
+				R = append(R, c.node)
+				inR[c.node] = true
+			}
+		}
 	}
-	return out
+	return R
 }
 
-// prune trims a node's neighbor list at a layer back down to mmax by keeping the
-// closest neighbors.
+// prune trims a node's neighbor list at a layer back down to mmax using the same
+// selection heuristic, with the node itself as the reference point.
 func (h *HNSW) prune(idx, layer, mmax int) []int {
 	conns := h.nodes[idx].Layers[layer]
-	cands := make([]candidate, len(conns))
 	base := h.nodes[idx].Vec
+	cands := make([]candidate, len(conns))
 	for i, c := range conns {
 		cands[i] = candidate{node: c, dist: h.distance(base, h.nodes[c].Vec)}
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].dist < cands[j].dist })
-	return selectNeighbors(cands, mmax)
+	return h.selectNeighborsHeuristic(base, cands, mmax)
 }
 
 func (h *HNSW) Search(query []float32, k int) ([]SearchResult, error) {
@@ -257,7 +318,7 @@ func (h *HNSW) Search(query []float32, k int) ([]SearchResult, error) {
 	if ef < k {
 		ef = k
 	}
-	found := h.searchLayer(query, []int{ep}, ef, 0)
+	found := h.searchLayer(query, []int{ep}, ef, 0, &visitedSet{})
 	if len(found) > k {
 		found = found[:k]
 	}
