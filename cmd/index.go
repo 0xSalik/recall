@@ -14,12 +14,14 @@ func Index(args []string) {
 	store := fs.String("store", defaultStoreDir(), "path to store directory")
 	embedModel := fs.String("embed", defaultEmbedModel, "embedding model path")
 	genModel := fs.String("gen", defaultGenModel, "generation model path")
-	llama := fs.String("llama", "", "path to llama-cli binary (default: search PATH)")
+	llama := fs.String("llama", "", "path to generation binary (default: search PATH)")
+	bin := fs.String("bin", "", "directory containing llama.cpp binaries (prepended to PATH)")
 	ext := fs.String("ext", "", "comma-separated extensions to include (default: all supported)")
 	paths := parseArgs(fs, args)
 	if len(paths) == 0 {
 		fail("index requires at least one path")
 	}
+	addBinToPath(*bin)
 
 	r, err := rag.New(*store, *embedModel, *genModel, *llama)
 	if err != nil {

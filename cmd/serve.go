@@ -24,8 +24,10 @@ func Serve(args []string) {
 	store := fs.String("store", defaultStoreDir(), "path to store directory")
 	embedModel := fs.String("embed", defaultEmbedModel, "embedding model path")
 	genModel := fs.String("gen", defaultGenModel, "generation model path")
-	llama := fs.String("llama", "", "path to llama-cli binary (default: search PATH)")
+	llama := fs.String("llama", "", "path to generation binary (default: search PATH)")
+	bin := fs.String("bin", "", "directory containing llama.cpp binaries (prepended to PATH)")
 	fs.Parse(args)
+	addBinToPath(*bin)
 
 	r, err := rag.New(*store, *embedModel, *genModel, *llama)
 	if err != nil {

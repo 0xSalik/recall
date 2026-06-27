@@ -36,8 +36,15 @@ export PATH="$PWD/third_party/llama.cpp/build/bin:$PATH"   # or pass --llama <pa
   single `llama-cli` binary is used as a fallback)
 - `llama-server` — optional, only for the embedding HTTP fallback
 
-`third_party/` is git-ignored. If you put the clone elsewhere, just make sure
-those binaries are on `PATH` (or pass `--llama /path/to/binary`).
+`third_party/` is git-ignored. If you'd rather not touch `PATH`, point `recall`
+straight at the binary directory with `--bin` on any command:
+
+```bash
+./bin/recall index ~/Documents --bin third_party/llama.cpp/build/bin
+```
+
+`--bin` is prepended to `PATH` for both the embedding and generation binaries, so
+it's the simplest way to run without editing your shell environment.
 
 Download the models:
 

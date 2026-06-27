@@ -49,6 +49,20 @@ func splitExts(csv string) []string {
 	return out
 }
 
+// addBinToPath prepends dir to PATH so the llama.cpp binaries are discoverable
+// without the user editing their shell environment. dir is made absolute first,
+// since a relative PATH entry only resolves from one working directory.
+func addBinToPath(dir string) {
+	if dir == "" {
+		return
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		abs = dir
+	}
+	os.Setenv("PATH", abs+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 // parseArgs parses flags that may be interspersed with positional arguments.
 // The standard flag package stops at the first non-flag token, which would make
 // `recall index ~/docs --ext .md` ignore --ext. This repeatedly parses, peeling
