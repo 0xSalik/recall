@@ -146,7 +146,7 @@ func IngestDir(root string, extensions []string) ([]Document, error) {
 
 func skipDir(name string) bool {
 	switch name {
-	case ".git", "node_modules", ".svn", ".hg", "vendor", "__pycache__", ".venv", "dist", "build":
+	case ".git", "node_modules", ".svn", ".hg", "vendor", "third_party", "__pycache__", ".venv", "dist", "build":
 		return true
 	}
 	return false

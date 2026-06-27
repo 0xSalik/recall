@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -67,21 +68,43 @@ func (e *LlamaEmbedder) Embed(texts []string) ([][]float32, error) {
 	return out, nil
 }
 
+// promptSeparator is a sentinel used to delimit prompts in the batch file. It
+// must not occur in normal text. We can't use a newline: current llama.cpp
+// splits each file line *again* on its --embd-separator (whose default matches
+// the literal two-character "\n"), so any chunk containing a literal "\n" (very
+// common in source code, e.g. fmt strings) would be over-split, yielding more
+// vectors than inputs. Joining on a unique sentinel and writing a single line
+// avoids both the per-line and the literal-"\n" splitting.
+const promptSeparator = "<#recall-sep#>"
+
 // run invokes the binary once for a batch of texts and returns parsed vectors.
+// The batch is written to a temp file (passed with -f) as a single line with
+// prompts delimited by promptSeparator, which is also handed to the binary as
+// --embd-separator so we get exactly one vector per input.
 func (e *LlamaEmbedder) run(texts []string) ([][]float32, error) {
+	f, err := os.CreateTemp("", "recall-embed-*.txt")
+	if err != nil {
+		return nil, fmt.Errorf("embed: temp file: %w", err)
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(strings.Join(sanitize(texts), promptSeparator) + "\n"); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("embed: writing prompts: %w", err)
+	}
+	f.Close()
+
 	// NB: do not pass --log-disable here. In current llama.cpp the embedding
 	// vectors are emitted through the logging system, so --log-disable silently
 	// suppresses the output we need to parse. Diagnostic logs go to stderr,
 	// which we capture separately, so stdout stays clean JSON.
 	args := []string{
 		"--model", e.modelPath,
+		"-f", f.Name(),
 		"--embd-normalize", "2",
 		"--embd-output-format", "json",
+		"--embd-separator", promptSeparator,
 	}
 	cmd := exec.Command(e.llamaPath, args...)
-
-	// llama-embedding reads the prompt(s) from stdin; one per line.
-	cmd.Stdin = strings.NewReader(strings.Join(sanitize(texts), "\n") + "\n")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -91,14 +114,18 @@ func (e *LlamaEmbedder) run(texts []string) ([][]float32, error) {
 	return parseEmbeddings(stdout.Bytes())
 }
 
-// sanitize collapses newlines inside individual texts so the one-per-line stdin
-// contract holds.
+// sanitize collapses newline variants to spaces and removes any occurrence of
+// the prompt separator so each text stays a single, indivisible prompt.
 func sanitize(texts []string) []string {
+	replacer := strings.NewReplacer(
+		"\r\n", " ",
+		"\n", " ",
+		"\r", " ",
+		promptSeparator, " ",
+	)
 	out := make([]string, len(texts))
 	for i, t := range texts {
-		t = strings.ReplaceAll(t, "\r\n", " ")
-		t = strings.ReplaceAll(t, "\n", " ")
-		out[i] = strings.TrimSpace(t)
+		out[i] = strings.TrimSpace(replacer.Replace(t))
 	}
 	return out
 }
