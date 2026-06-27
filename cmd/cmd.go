@@ -4,6 +4,7 @@
 package cmd
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,6 +47,26 @@ func splitExts(csv string) []string {
 		out = append(out, p)
 	}
 	return out
+}
+
+// parseArgs parses flags that may be interspersed with positional arguments.
+// The standard flag package stops at the first non-flag token, which would make
+// `recall index ~/docs --ext .md` ignore --ext. This repeatedly parses, peeling
+// off one positional at a time, so flags before or after paths both work.
+func parseArgs(fs *flag.FlagSet, args []string) []string {
+	var positionals []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			os.Exit(2)
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		positionals = append(positionals, rest[0])
+		args = rest[1:]
+	}
+	return positionals
 }
 
 // fail prints an error to stderr and exits non-zero.

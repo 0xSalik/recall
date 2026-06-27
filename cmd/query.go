@@ -20,9 +20,7 @@ func Query(args []string) {
 	k := fs.Int("k", 5, "number of chunks to retrieve")
 	stream := fs.Bool("stream", false, "stream output token by token")
 	sources := fs.Bool("sources", false, "print source files after the answer")
-	fs.Parse(args)
-
-	question := strings.Join(fs.Args(), " ")
+	question := strings.Join(parseArgs(fs, args), " ")
 	if question == "" {
 		fail("query requires a question")
 	}

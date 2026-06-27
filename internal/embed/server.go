@@ -147,19 +147,29 @@ func truncate(s string, n int) string {
 // Detect picks an available backend: it prefers the llama-embedding CLI, then
 // falls back to a llama-server endpoint at serverURL. modelPath is required for
 // the CLI backend; serverURL may be empty to skip the server probe.
+//
+// When the CLI binary is present but its probe fails (e.g. a missing model file
+// or an output-format change), that error is surfaced rather than masked behind
+// a generic "no backend" message, since it is almost always the real problem.
 func Detect(modelPath, llamaPath, serverURL string) (Embedder, error) {
 	if llamaPath == "" {
 		llamaPath = "llama-embedding"
 	}
+	var probeErr error
 	if _, err := exec.LookPath(llamaPath); err == nil {
-		if e, cerr := NewLlamaEmbedder(modelPath, llamaPath); cerr == nil {
+		e, cerr := NewLlamaEmbedder(modelPath, llamaPath)
+		if cerr == nil {
 			return e, nil
 		}
+		probeErr = cerr
 	}
 	if serverURL != "" {
 		if e, serr := NewServerEmbedder(serverURL); serr == nil {
 			return e, nil
 		}
+	}
+	if probeErr != nil {
+		return nil, fmt.Errorf("embed: %q is installed but the embedding probe failed (check the model path %q): %w", llamaPath, modelPath, probeErr)
 	}
 	return nil, fmt.Errorf("embed: no embedding backend available (need %q in PATH or a llama-server at %q)", llamaPath, serverURL)
 }

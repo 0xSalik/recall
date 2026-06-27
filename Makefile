@@ -10,8 +10,10 @@ build-ui:
 	@test -f web/index.html || { echo "web/index.html missing"; exit 1; }
 	@echo "ui: web/index.html ready (embedded at build time)"
 
+# Scoped to our own packages so an in-repo third_party/llama.cpp clone (which the
+# go tool would otherwise walk) doesn't pollute the output.
 test:
-	go test ./...
+	go test ./internal/... ./cmd/... .
 
 bench:
 	go test -bench=. -benchmem ./internal/...

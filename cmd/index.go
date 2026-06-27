@@ -16,9 +16,7 @@ func Index(args []string) {
 	genModel := fs.String("gen", defaultGenModel, "generation model path")
 	llama := fs.String("llama", "", "path to llama-cli binary (default: search PATH)")
 	ext := fs.String("ext", "", "comma-separated extensions to include (default: all supported)")
-	fs.Parse(args)
-
-	paths := fs.Args()
+	paths := parseArgs(fs, args)
 	if len(paths) == 0 {
 		fail("index requires at least one path")
 	}

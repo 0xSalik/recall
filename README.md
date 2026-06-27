@@ -19,15 +19,25 @@ The **index** itself comes in two flavors behind one interface. `FlatIndex` is a
 Prerequisites:
 
 - Go 1.21+
-- A C/C++ toolchain to build llama.cpp (or a prebuilt `llama-cli` / `llama-embedding` on your `PATH`)
+- A C/C++ toolchain to build llama.cpp (or prebuilt llama.cpp binaries on your `PATH`)
 
 Build llama.cpp (skip if you already have the binaries):
 
 ```bash
 git clone https://github.com/ggerganov/llama.cpp third_party/llama.cpp
 cd third_party/llama.cpp && cmake -B build && cmake --build build -j && cd ../..
-# put build/bin on your PATH, or pass --llama <path> to recall
+export PATH="$PWD/third_party/llama.cpp/build/bin:$PATH"   # or pass --llama <path>
 ```
+
+`recall` needs three binaries from that build on your `PATH`:
+
+- `llama-embedding` — used for embeddings
+- `llama-completion` — used for generation (current llama.cpp; on older builds the
+  single `llama-cli` binary is used as a fallback)
+- `llama-server` — optional, only for the embedding HTTP fallback
+
+`third_party/` is git-ignored. If you put the clone elsewhere, just make sure
+those binaries are on `PATH` (or pass `--llama /path/to/binary`).
 
 Download the models:
 

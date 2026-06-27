@@ -1,5 +1,6 @@
 models/
 vendor/
+third_party/
 bin/
 web/recall.wasm
 .DS_Store

@@ -69,11 +69,14 @@ func (e *LlamaEmbedder) Embed(texts []string) ([][]float32, error) {
 
 // run invokes the binary once for a batch of texts and returns parsed vectors.
 func (e *LlamaEmbedder) run(texts []string) ([][]float32, error) {
+	// NB: do not pass --log-disable here. In current llama.cpp the embedding
+	// vectors are emitted through the logging system, so --log-disable silently
+	// suppresses the output we need to parse. Diagnostic logs go to stderr,
+	// which we capture separately, so stdout stays clean JSON.
 	args := []string{
 		"--model", e.modelPath,
 		"--embd-normalize", "2",
 		"--embd-output-format", "json",
-		"--log-disable",
 	}
 	cmd := exec.Command(e.llamaPath, args...)
 

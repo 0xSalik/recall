@@ -41,17 +41,35 @@ type LlamaGenerator struct {
 	llamaPath string
 }
 
-// NewLlamaGenerator verifies the llama-cli binary is available.
+// NewLlamaGenerator resolves a generation binary. When llamaPath is empty it
+// prefers llama-completion (the dedicated one-shot tool in current llama.cpp)
+// and falls back to llama-cli for older single-binary builds. Note that in
+// recent llama.cpp llama-cli is an interactive chat UI and is unsuitable for
+// scripted one-shot generation, so llama-completion is strongly preferred.
 func NewLlamaGenerator(modelPath, llamaPath string) (*LlamaGenerator, error) {
 	if llamaPath == "" {
-		llamaPath = "llama-cli"
-	}
-	if _, err := exec.LookPath(llamaPath); err != nil {
+		for _, name := range []string{"llama-completion", "llama-cli"} {
+			if p, err := exec.LookPath(name); err == nil {
+				llamaPath = p
+				break
+			}
+		}
+		if llamaPath == "" {
+			return nil, fmt.Errorf("rag: no generation binary found (need llama-completion or llama-cli in PATH)")
+		}
+	} else if _, err := exec.LookPath(llamaPath); err != nil {
 		return nil, fmt.Errorf("rag: generation binary %q not found: %w", llamaPath, err)
 	}
 	return &LlamaGenerator{modelPath: modelPath, llamaPath: llamaPath}, nil
 }
 
+// args builds a non-interactive, subprocess-friendly invocation:
+//   - -st / --single-turn   run one turn and exit (no interactive prompt)
+//   - --simple-io           plain stdout suitable for capture (no spinner/banner)
+//   - --no-display-prompt   emit only the completion, not the echoed prompt
+//
+// --log-disable is intentionally omitted; logs go to stderr (captured
+// separately) and on some builds the flag also suppresses wanted output.
 func (g *LlamaGenerator) args(prompt string, opts GenOptions) []string {
 	return []string{
 		"--model", g.modelPath,
@@ -59,7 +77,8 @@ func (g *LlamaGenerator) args(prompt string, opts GenOptions) []string {
 		"--n-predict", itoa(opts.NPredict),
 		"--temp", ftoa(opts.Temp),
 		"--repeat-penalty", ftoa(opts.RepeatPenalty),
-		"--log-disable",
+		"-st",
+		"--simple-io",
 		"--no-display-prompt",
 	}
 }
