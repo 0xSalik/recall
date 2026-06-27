@@ -83,7 +83,7 @@ func (v *visitedSet) reset(n int) {
 }
 
 func (v *visitedSet) test(i int) bool { return v.stamp[i] == v.epoch }
-func (v *visitedSet) set(i int)        { v.stamp[i] = v.epoch }
+func (v *visitedSet) set(i int)       { v.stamp[i] = v.epoch }
 
 // distance is cosine distance for unit vectors: 1 - dot. Smaller is closer.
 func (h *HNSW) distance(a, b []float32) float32 {
