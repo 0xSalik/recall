@@ -58,6 +58,14 @@ func newHNSWSeeded(dims int, seed int64) *HNSW {
 
 func (h *HNSW) Len() int { return len(h.nodes) }
 
+func (h *HNSW) Entries() []Entry {
+	out := make([]Entry, len(h.nodes))
+	for i, n := range h.nodes {
+		out[i] = Entry{ID: n.ID, Vec: n.Vec, ChunkIdx: n.ChunkIdx}
+	}
+	return out
+}
+
 // visitedSet is an O(1)-reset visited marker: a node is "visited" when its stamp
 // equals the current epoch. Reusing one set across a search avoids the
 // allocation churn of a fresh map per layer. Not safe for concurrent use; each

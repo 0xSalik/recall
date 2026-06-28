@@ -43,6 +43,14 @@ func (f *FlatIndex) Add(id string, vec []float32, chunkIdx int) error {
 
 func (f *FlatIndex) Len() int { return len(f.ids) }
 
+func (f *FlatIndex) Entries() []Entry {
+	out := make([]Entry, len(f.ids))
+	for i := range f.ids {
+		out[i] = Entry{ID: f.ids[i], Vec: f.vecs[i], ChunkIdx: f.chunk[i]}
+	}
+	return out
+}
+
 func (f *FlatIndex) Search(query []float32, k int) ([]SearchResult, error) {
 	if len(query) != f.dims && f.dims != 0 {
 		return nil, fmt.Errorf("flat: query dim %d != index dim %d", len(query), f.dims)

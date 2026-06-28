@@ -159,6 +159,79 @@ func TestServeStatus(t *testing.T) {
 	}
 }
 
+func TestServeFilesAndRemove(t *testing.T) {
+	srv := newTestServer(t)
+
+	// /files lists the one indexed doc.
+	req := httptest.NewRequest(http.MethodGet, "/files", nil)
+	rec := httptest.NewRecorder()
+	srv.handleFiles(rec, req)
+	var fl struct {
+		Files []store.FileInfo `json:"files"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &fl); err != nil {
+		t.Fatal(err)
+	}
+	if len(fl.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(fl.Files))
+	}
+
+	// /remove drops it.
+	body, _ := json.Marshal(removeRequest{Path: fl.Files[0].Path})
+	rreq := httptest.NewRequest(http.MethodPost, "/remove", strings.NewReader(string(body)))
+	rrec := httptest.NewRecorder()
+	srv.handleRemove(rrec, rreq)
+	if rrec.Code != http.StatusOK {
+		t.Fatalf("remove status = %d: %s", rrec.Code, rrec.Body.String())
+	}
+	if srv.rag.Store().FileCount() != 0 {
+		t.Fatalf("file not removed, count = %d", srv.rag.Store().FileCount())
+	}
+}
+
+func TestServeClear(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/clear", nil)
+	rec := httptest.NewRecorder()
+	srv.handleClear(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear status = %d", rec.Code)
+	}
+	if srv.rag.Store().ChunkCount() != 0 {
+		t.Fatal("store not cleared")
+	}
+}
+
+func TestServeRefreshPrunesDeleted(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rag.NewWithComponents(st, fakeEmbedder{dims: 128}, fakeGenerator{})
+	dir := t.TempDir()
+	p := filepath.Join(dir, "doc.txt")
+	if err := os.WriteFile(p, []byte("vectors are embedded and indexed for retrieval and ranking"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Index([]string{dir}); err != nil {
+		t.Fatal(err)
+	}
+	srv := newServer(r)
+
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	rec := httptest.NewRecorder()
+	srv.handleRefresh(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if srv.rag.Store().FileCount() != 0 {
+		t.Fatalf("deleted file not pruned, count = %d", srv.rag.Store().FileCount())
+	}
+}
+
 func TestServeIndexHTML(t *testing.T) {
 	srv := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

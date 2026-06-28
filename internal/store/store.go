@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/0xSalik/recall/internal/chunker"
@@ -124,6 +126,138 @@ func (s *Store) MarkIndexed(path string, modTime time.Time) {
 func (s *Store) HasFile(path string, modTime time.Time) bool {
 	mt, ok := s.man.Files[path]
 	return ok && mt.Equal(modTime)
+}
+
+// IsIndexed reports whether path is recorded in the manifest at any modtime.
+func (s *Store) IsIndexed(path string) bool {
+	_, ok := s.man.Files[path]
+	return ok
+}
+
+// FileInfo describes an indexed file for listing.
+type FileInfo struct {
+	Path    string    `json:"path"`
+	ModTime time.Time `json:"modtime"`
+	Chunks  int       `json:"chunks"`
+}
+
+// ListFiles returns the indexed files with per-file chunk counts, sorted by
+// path.
+func (s *Store) ListFiles() []FileInfo {
+	counts := make(map[string]int, len(s.man.Files))
+	for _, c := range s.chunks {
+		counts[c.Source]++
+	}
+	out := make([]FileInfo, 0, len(s.man.Files))
+	for p, mt := range s.man.Files {
+		out = append(out, FileInfo{Path: p, ModTime: mt, Chunks: counts[p]})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// Clear removes all chunks, vectors, and manifest entries, resetting the store
+// to empty. Call Save to persist.
+func (s *Store) Clear() {
+	s.chunks = nil
+	s.man.Files = map[string]time.Time{}
+	s.man.Dims = 0
+	s.index = newIndex(s.man.IndexType, 0)
+}
+
+// Remove deletes everything indexed at exactly target, or (treating target as a
+// directory) under target. It returns the number of chunks removed and the list
+// of files removed. Call Save to persist.
+func (s *Store) Remove(target string) (int, []string, error) {
+	t := normalize(target)
+	match := func(p string) bool {
+		np := normalize(p)
+		return np == t || strings.HasPrefix(np, t+string(filepath.Separator))
+	}
+	var removedFiles []string
+	for p := range s.man.Files {
+		if match(p) {
+			removedFiles = append(removedFiles, p)
+		}
+	}
+	n, err := s.removeWhere(func(c chunker.Chunk) bool { return match(c.Source) })
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, p := range removedFiles {
+		delete(s.man.Files, p)
+	}
+	sort.Strings(removedFiles)
+	return n, removedFiles, nil
+}
+
+// RemoveFiles deletes all chunks belonging to the exact file paths given and
+// drops them from the manifest, rebuilding the index once. Call Save to persist.
+func (s *Store) RemoveFiles(paths []string) (int, error) {
+	if len(paths) == 0 {
+		return 0, nil
+	}
+	set := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		set[normalize(p)] = true
+	}
+	n, err := s.removeWhere(func(c chunker.Chunk) bool { return set[normalize(c.Source)] })
+	if err != nil {
+		return 0, err
+	}
+	for p := range s.man.Files {
+		if set[normalize(p)] {
+			delete(s.man.Files, p)
+		}
+	}
+	return n, nil
+}
+
+// removeWhere drops chunks matching pred and rebuilds the index from the
+// survivors' vectors (extracted from the current index). It does not touch the
+// manifest; callers do that.
+func (s *Store) removeWhere(pred func(chunker.Chunk) bool) (int, error) {
+	vecByIdx := make(map[int][]float32, len(s.chunks))
+	for _, e := range s.index.Entries() {
+		vecByIdx[e.ChunkIdx] = e.Vec
+	}
+	keptChunks := make([]chunker.Chunk, 0, len(s.chunks))
+	keptVecs := make([][]float32, 0, len(s.chunks))
+	removed := 0
+	for i, c := range s.chunks {
+		if pred(c) {
+			removed++
+			continue
+		}
+		keptChunks = append(keptChunks, c)
+		keptVecs = append(keptVecs, vecByIdx[i])
+	}
+	s.chunks = keptChunks
+	if err := s.rebuildIndex(keptVecs); err != nil {
+		return removed, err
+	}
+	return removed, nil
+}
+
+// rebuildIndex constructs a fresh index from the current chunks and the given
+// parallel vectors (chunk i uses vecs[i]).
+func (s *Store) rebuildIndex(vecs [][]float32) error {
+	idx := newIndex(s.man.IndexType, s.man.Dims)
+	for i := range s.chunks {
+		if vecs[i] == nil {
+			return fmt.Errorf("store: missing vector for chunk %d during rebuild", i)
+		}
+		if err := idx.Add(s.chunks[i].ID, vecs[i], i); err != nil {
+			return err
+		}
+	}
+	s.index = idx
+	return nil
+}
+
+// normalize cleans a path for stable comparison.
+func normalize(p string) string {
+	return filepath.Clean(p)
 }
 
 // Search embeds-free: it takes an already-embedded query vector and returns the

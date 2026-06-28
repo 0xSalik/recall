@@ -13,6 +13,16 @@ type SearchResult struct {
 	ChunkIdx int     // caller-supplied index into a parallel chunk array
 }
 
+// Entry is a stored vector with its id and chunk index. Entries lets callers
+// extract the full contents of an index so they can rebuild a filtered copy —
+// which is how deletion is implemented (neither index type supports in-place
+// removal, so the store rebuilds from the surviving entries).
+type Entry struct {
+	ID       string
+	Vec      []float32
+	ChunkIdx int
+}
+
 // Index is the common contract for vector indexes.
 type Index interface {
 	// Add inserts a vector with an associated id and chunk index.
@@ -21,6 +31,8 @@ type Index interface {
 	Search(query []float32, k int) ([]SearchResult, error)
 	// Len reports the number of indexed vectors.
 	Len() int
+	// Entries returns every stored vector (order unspecified).
+	Entries() []Entry
 	// Save serializes the index to a file at path.
 	Save(path string) error
 	// Load replaces the index contents from a file at path.

@@ -109,6 +109,125 @@ func TestAddSearchPersist(t *testing.T) {
 	}
 }
 
+func makeChunksFor(source string, n, start int) ([]chunker.Chunk, [][]float32) {
+	r := rand.New(rand.NewSource(int64(start + 1)))
+	chunks := make([]chunker.Chunk, n)
+	vecs := make([][]float32, n)
+	for i := range chunks {
+		chunks[i] = chunker.Chunk{
+			ID:     source + "-" + itoa(start+i),
+			Source: source,
+			Text:   "text " + itoa(start+i),
+		}
+		vecs[i] = unitVec(r, 48)
+	}
+	return chunks, vecs
+}
+
+func TestRemoveByPrefixAndClear(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	ca, va := makeChunksFor("/docs/a/one.txt", 5, 0)
+	cb, vb := makeChunksFor("/docs/a/two.txt", 3, 100)
+	cc, vc := makeChunksFor("/docs/b/three.txt", 4, 200)
+	s.AddChunks(ca, va)
+	s.MarkIndexed("/docs/a/one.txt", time.Unix(1, 0))
+	s.AddChunks(cb, vb)
+	s.MarkIndexed("/docs/a/two.txt", time.Unix(2, 0))
+	s.AddChunks(cc, vc)
+	s.MarkIndexed("/docs/b/three.txt", time.Unix(3, 0))
+
+	if s.ChunkCount() != 12 || s.FileCount() != 3 {
+		t.Fatalf("setup wrong: %d chunks, %d files", s.ChunkCount(), s.FileCount())
+	}
+
+	// Remove the /docs/a directory: should drop 8 chunks and 2 files.
+	n, files, err := s.Remove("/docs/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 8 {
+		t.Fatalf("removed %d chunks, want 8", n)
+	}
+	if len(files) != 2 {
+		t.Fatalf("removed %d files, want 2", len(files))
+	}
+	if s.ChunkCount() != 4 || s.FileCount() != 1 {
+		t.Fatalf("after remove: %d chunks, %d files", s.ChunkCount(), s.FileCount())
+	}
+
+	// Surviving chunks must still be searchable and rebuilt correctly.
+	got, _, err := s.Search(vc[0], 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) == 0 || got[0].Source != "/docs/b/three.txt" {
+		t.Fatalf("search after remove returned wrong chunk: %+v", got)
+	}
+
+	// Persistence round-trip after removal.
+	dir := s.Dir()
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	s2, _ := Open(dir)
+	if s2.ChunkCount() != 4 || s2.FileCount() != 1 {
+		t.Fatalf("reopened after remove: %d chunks, %d files", s2.ChunkCount(), s2.FileCount())
+	}
+
+	// Clear wipes everything.
+	s2.Clear()
+	if s2.ChunkCount() != 0 || s2.FileCount() != 0 {
+		t.Fatalf("after clear: %d chunks, %d files", s2.ChunkCount(), s2.FileCount())
+	}
+}
+
+func TestRemoveFilesExact(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	ca, va := makeChunksFor("/x/a.txt", 3, 0)
+	cb, vb := makeChunksFor("/x/ab.txt", 2, 50) // shares the /x/a prefix but is a different file
+	s.AddChunks(ca, va)
+	s.MarkIndexed("/x/a.txt", time.Unix(1, 0))
+	s.AddChunks(cb, vb)
+	s.MarkIndexed("/x/ab.txt", time.Unix(2, 0))
+
+	// Exact-file removal must not touch the similarly-named file.
+	n, err := s.RemoveFiles([]string{"/x/a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Fatalf("removed %d, want 3", n)
+	}
+	if !s.IsIndexed("/x/ab.txt") || s.IsIndexed("/x/a.txt") {
+		t.Fatal("RemoveFiles affected the wrong file")
+	}
+	if s.ChunkCount() != 2 {
+		t.Fatalf("chunk count = %d, want 2", s.ChunkCount())
+	}
+}
+
+func TestListFiles(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	ca, va := makeChunksFor("/z/b.txt", 2, 0)
+	cb, vb := makeChunksFor("/z/a.txt", 3, 10)
+	s.AddChunks(ca, va)
+	s.MarkIndexed("/z/b.txt", time.Unix(1, 0))
+	s.AddChunks(cb, vb)
+	s.MarkIndexed("/z/a.txt", time.Unix(2, 0))
+
+	files := s.ListFiles()
+	if len(files) != 2 {
+		t.Fatalf("listed %d files, want 2", len(files))
+	}
+	// Sorted by path: a.txt before b.txt.
+	if files[0].Path != "/z/a.txt" || files[0].Chunks != 3 {
+		t.Fatalf("unexpected first file: %+v", files[0])
+	}
+	if files[1].Path != "/z/b.txt" || files[1].Chunks != 2 {
+		t.Fatalf("unexpected second file: %+v", files[1])
+	}
+}
+
 func TestHasFileChangeDetection(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir)

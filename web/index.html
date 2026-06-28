@@ -67,14 +67,51 @@
     flex: none; color: var(--accent); border: 1px solid var(--accent-dim);
     border-radius: 4px; padding: 1px 8px; font-size: 12px; height: fit-content;
   }
+  .links { display: flex; gap: 14px; align-items: baseline; }
+  .link {
+    color: var(--muted); font-size: 12px; background: none; border: none;
+    padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;
+  }
+  .link:hover { color: var(--accent); }
+  #manage { display: none; margin-bottom: 24px; border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px; background: var(--panel); }
+  #manage.open { display: block; }
+  #manage .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+  #manage .toolbar .spacer { flex: 1; }
+  button.danger { border-color: #5a2a2a; color: #f7a2a2; }
+  button.danger:hover:not(:disabled) { border-color: #e06c6c; }
+  button.small { padding: 4px 10px; font-size: 12px; }
+  #fileList { display: flex; flex-direction: column; gap: 6px; max-height: 340px; overflow-y: auto; }
+  .file {
+    display: flex; align-items: center; gap: 10px; padding: 7px 10px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  }
+  .file .path { flex: 1; word-break: break-all; }
+  .file .count { flex: none; color: var(--muted); font-size: 12px; }
+  #manageMsg { color: var(--muted); font-size: 12px; margin-top: 10px; min-height: 1em; }
+  #manageMsg.err { color: #f7a2a2; }
 </style>
 </head>
 <body>
   <div id="app">
     <header>
       <h1>recall</h1>
-      <span id="status">connecting…</span>
+      <div class="links">
+        <button id="manageToggle" class="link">manage index</button>
+        <span id="status">connecting…</span>
+      </div>
     </header>
+
+    <div id="manage">
+      <div class="toolbar">
+        <button id="refreshBtn" class="small">↻ Refresh</button>
+        <span class="spacer"></span>
+        <button id="clearBtn" class="small danger">Clear all</button>
+      </div>
+      <div id="fileList"></div>
+      <div id="manageMsg"></div>
+    </div>
+
     <div id="search">
       <textarea id="question" rows="3" placeholder="Ask anything about your files…"></textarea>
       <div class="row">
@@ -185,6 +222,114 @@ submitEl.addEventListener("click", ask);
 $("question").addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter") ask();
 });
+
+// ---- Index management ----
+const manageEl = $("manage");
+const fileListEl = $("fileList");
+const manageMsgEl = $("manageMsg");
+
+function setMsg(text, isErr) {
+  manageMsgEl.textContent = text || "";
+  manageMsgEl.classList.toggle("err", !!isErr);
+}
+
+async function loadFiles() {
+  setMsg("loading…");
+  try {
+    const r = await fetch("/files");
+    const data = await r.json();
+    const files = data.files || [];
+    fileListEl.innerHTML = "";
+    if (!files.length) {
+      setMsg("No files indexed.");
+      return;
+    }
+    for (const f of files) {
+      const row = document.createElement("div");
+      row.className = "file";
+      const path = document.createElement("span");
+      path.className = "path";
+      path.textContent = f.path;
+      const count = document.createElement("span");
+      count.className = "count";
+      count.textContent = `${f.chunks} chunks`;
+      const btn = document.createElement("button");
+      btn.className = "small danger";
+      btn.textContent = "remove";
+      btn.addEventListener("click", () => removeFile(f.path, btn));
+      row.append(path, count, btn);
+      fileListEl.appendChild(row);
+    }
+    setMsg(`${files.length} files indexed.`);
+  } catch (e) {
+    setMsg(`failed to load files: ${e}`, true);
+  }
+}
+
+async function removeFile(path, btn) {
+  if (btn) btn.disabled = true;
+  setMsg("removing…");
+  try {
+    const r = await fetch("/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    const res = await r.json();
+    setMsg(`removed ${res.removedFiles} file(s), ${res.removedChunks} chunk(s).`);
+    await loadFiles();
+    refreshStatus();
+  } catch (e) {
+    setMsg(`remove failed: ${e}`, true);
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function refreshIndex() {
+  const btn = $("refreshBtn");
+  btn.disabled = true;
+  setMsg("refreshing (pruning deleted, reindexing changed)…");
+  try {
+    const r = await fetch("/refresh", { method: "POST" });
+    if (!r.ok) throw new Error(await r.text());
+    const res = await r.json();
+    setMsg(`refresh done: ${res.pruned} pruned, ${res.indexed} reindexed.`);
+    await loadFiles();
+    refreshStatus();
+  } catch (e) {
+    setMsg(`refresh failed: ${e}`, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function clearIndex() {
+  if (!confirm("Remove ALL indexed files? This cannot be undone.")) return;
+  const btn = $("clearBtn");
+  btn.disabled = true;
+  setMsg("clearing…");
+  try {
+    const r = await fetch("/clear", { method: "POST" });
+    if (!r.ok) throw new Error(await r.text());
+    setMsg("index cleared.");
+    await loadFiles();
+    refreshStatus();
+  } catch (e) {
+    setMsg(`clear failed: ${e}`, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$("manageToggle").addEventListener("click", () => {
+  const open = manageEl.classList.toggle("open");
+  $("manageToggle").textContent = open ? "hide index" : "manage index";
+  if (open) loadFiles();
+});
+$("refreshBtn").addEventListener("click", refreshIndex);
+$("clearBtn").addEventListener("click", clearIndex);
+
 refreshStatus();
 </script>
 </body>

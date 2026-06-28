@@ -89,6 +89,26 @@ Sources:
   papers/malkov-hnsw.pdf, page 7 (score: 0.91)
 ```
 
+Retrieval only — embed the query and print the matching chunks without invoking the generation model (fast, and doesn't need a gen model installed):
+
+```bash
+$ recall search "HNSW construction" -k 3
+1. [0.941] notes/hnsw.md
+   HNSW assigns each node a random layer, then connects it to its nearest…
+```
+
+Manage the index. The index is incremental, so it also needs pruning and refreshing:
+
+```bash
+$ recall list                       # every indexed file with its chunk count
+$ recall refresh                    # drop files deleted on disk, reindex changed ones
+$ recall refresh ~/Documents        # ...and also pick up new files under a path
+$ recall remove ~/code/old-project  # drop a single file or a whole folder
+$ recall clear                      # wipe the index (prompts; --yes to skip)
+```
+
+`refresh` exists because re-running `index` only ever *adds* — it can't know a file was deleted or moved. `refresh` reconciles the store with the filesystem: indexed files that no longer exist are pruned, changed files are re-embedded (their stale chunks removed first, so nothing is duplicated), and any new files under the given paths are added. `index` itself now also removes a file's old chunks before re-indexing it when its mtime changed, so re-indexing never leaves duplicate chunks behind.
+
 Check the store, or serve the browser UI + API:
 
 ```bash
@@ -103,7 +123,9 @@ $ recall serve
 recall serving on http://localhost:8080
 ```
 
-The server exposes `GET /status`, and `POST /query` which content-negotiates: send `Accept: text/event-stream` for token-by-token SSE (what the browser UI uses), or omit it for a single JSON `{answer, sources}` response (what the CLI uses).
+The server exposes `GET /status`, `GET /files`, `POST /remove`, `POST /refresh`, `POST /clear`, and `POST /query` which content-negotiates: send `Accept: text/event-stream` for token-by-token SSE (what the browser UI uses), or omit it for a single JSON `{answer, sources}` response (what the CLI uses). The browser UI has a **manage index** panel (top right) to list, remove, refresh, and clear without leaving the page.
+
+Deletion note: neither the flat nor the HNSW index supports in-place removal, so `remove`/`refresh`/`clear` work by rebuilding the index from the surviving vectors (extracted from the current index via `Entries()`). For the target corpus sizes this is cheap and keeps the index types simple.
 
 ## Architecture decisions and tradeoffs
 

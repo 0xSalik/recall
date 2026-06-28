@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/0xSalik/recall/internal/rag"
+	"github.com/0xSalik/recall/internal/store"
 	"github.com/0xSalik/recall/web"
 )
 
@@ -39,6 +41,10 @@ func Serve(args []string) {
 	mux.HandleFunc("/", srv.handleIndex)
 	mux.HandleFunc("/query", srv.handleQuery)
 	mux.HandleFunc("/status", srv.handleStatus)
+	mux.HandleFunc("/files", srv.handleFiles)
+	mux.HandleFunc("/remove", srv.handleRemove)
+	mux.HandleFunc("/refresh", srv.handleRefresh)
+	mux.HandleFunc("/clear", srv.handleClear)
 
 	fmt.Printf("recall serving on http://%s\n", *addr)
 	if err := http.ListenAndServe(*addr, mux); err != nil {
@@ -169,6 +175,84 @@ func (s *server) handleStatus(w http.ResponseWriter, req *http.Request) {
 		"files":  st.FileCount(),
 		"chunks": st.ChunkCount(),
 	})
+}
+
+// handleFiles returns the indexed files with chunk counts.
+func (s *server) handleFiles(w http.ResponseWriter, req *http.Request) {
+	files := s.rag.ListFiles()
+	if files == nil {
+		files = []store.FileInfo{}
+	}
+	writeJSON(w, map[string]any{"files": files})
+}
+
+type removeRequest struct {
+	Path string `json:"path"`
+}
+
+// handleRemove drops a file or folder from the index.
+func (s *server) handleRemove(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var rr removeRequest
+	if err := json.NewDecoder(req.Body).Decode(&rr); err != nil || strings.TrimSpace(rr.Path) == "" {
+		http.Error(w, "bad request: path required", http.StatusBadRequest)
+		return
+	}
+	n, files, err := s.rag.Remove(rr.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"removedFiles": len(files), "removedChunks": n})
+}
+
+type refreshRequest struct {
+	Paths []string `json:"paths"`
+}
+
+// handleRefresh prunes deleted files, reindexes changed ones, and indexes new
+// files under any provided paths.
+func (s *server) handleRefresh(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var rr refreshRequest
+	// Body is optional; ignore decode errors on empty bodies.
+	_ = json.NewDecoder(req.Body).Decode(&rr)
+	res, err := s.rag.Refresh(rr.Paths)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	indexed := 0
+	for _, ir := range res.Reindexed {
+		if !ir.Skipped {
+			indexed++
+		}
+	}
+	writeJSON(w, map[string]any{"pruned": len(res.Deleted), "indexed": indexed})
+}
+
+// handleClear empties the index.
+func (s *server) handleClear(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.rag.Clear(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(v)
 }
 
 func toResponse(ans rag.Answer) queryResponse {

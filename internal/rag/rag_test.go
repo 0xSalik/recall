@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/0xSalik/recall/internal/chunker"
 	"github.com/0xSalik/recall/internal/embed"
@@ -144,6 +145,142 @@ func TestIndexIdempotent(t *testing.T) {
 	}
 }
 
+func TestReindexChangedFileNoDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.txt")
+	mustWriteFile(t, p, strings.Repeat("alpha beta gamma. ", 30))
+
+	r, _ := newTestRAG(t)
+	if _, err := r.Index([]string{dir}); err != nil {
+		t.Fatal(err)
+	}
+	first := r.Store().ChunkCount()
+	if first == 0 {
+		t.Fatal("nothing indexed")
+	}
+
+	// Modify the file (and bump mtime) then re-index: chunk count should
+	// reflect the new content, not stack on top of the old chunks.
+	mustWriteFile(t, p, strings.Repeat("delta epsilon zeta eta. ", 30))
+	bumpModTime(t, p)
+	if _, err := r.Index([]string{dir}); err != nil {
+		t.Fatal(err)
+	}
+	if r.Store().FileCount() != 1 {
+		t.Fatalf("file count = %d, want 1", r.Store().FileCount())
+	}
+	// All surviving chunks must be from the new content.
+	for _, f := range r.Store().ListFiles() {
+		if f.Path == p && f.Chunks == 0 {
+			t.Fatal("file has no chunks after reindex")
+		}
+	}
+	ans, err := r.Ask("epsilon zeta", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range ans.Sources {
+		if strings.Contains(s.Chunk.Text, "alpha beta gamma") {
+			t.Fatal("stale chunk from old file content still present after reindex")
+		}
+	}
+}
+
+func TestRefreshPrunesDeletedFiles(t *testing.T) {
+	dir := t.TempDir()
+	keep := filepath.Join(dir, "keep.txt")
+	gone := filepath.Join(dir, "gone.txt")
+	mustWriteFile(t, keep, "vectors are embedded and indexed for retrieval ranking")
+	mustWriteFile(t, gone, "sourdough needs flour water salt and a starter culture")
+
+	r, _ := newTestRAG(t)
+	if _, err := r.Index([]string{dir}); err != nil {
+		t.Fatal(err)
+	}
+	if r.Store().FileCount() != 2 {
+		t.Fatalf("expected 2 files, got %d", r.Store().FileCount())
+	}
+
+	// Delete one file on disk, then refresh.
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Refresh(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Deleted) != 1 || res.Deleted[0] != gone {
+		t.Fatalf("expected gone.txt to be pruned, got %+v", res.Deleted)
+	}
+	if r.Store().FileCount() != 1 {
+		t.Fatalf("file count after refresh = %d, want 1", r.Store().FileCount())
+	}
+	// A query must no longer surface the deleted file.
+	ans, err := r.Ask("how do I bake sourdough?", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range ans.Sources {
+		if s.Chunk.Source == gone {
+			t.Fatal("deleted file still referenced in query results")
+		}
+	}
+}
+
+func TestRemoveAndClear(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(dir, "top.txt"), strings.Repeat("top level content about vectors and embeddings. ", 5))
+	mustWriteFile(t, filepath.Join(sub, "deep.txt"), strings.Repeat("nested content about retrieval and ranking. ", 5))
+
+	r, _ := newTestRAG(t)
+	if _, err := r.Index([]string{dir}); err != nil {
+		t.Fatal(err)
+	}
+	if r.Store().FileCount() != 2 {
+		t.Fatalf("expected 2 files, got %d", r.Store().FileCount())
+	}
+
+	// Remove the sub/ directory.
+	n, files, err := r.Remove(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 || len(files) != 1 {
+		t.Fatalf("remove returned n=%d files=%v", n, files)
+	}
+	if r.Store().FileCount() != 1 {
+		t.Fatalf("file count after remove = %d, want 1", r.Store().FileCount())
+	}
+
+	// Clear wipes the rest.
+	if err := r.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	if r.Store().ChunkCount() != 0 || r.Store().FileCount() != 0 {
+		t.Fatalf("store not empty after clear: %d chunks, %d files", r.Store().ChunkCount(), r.Store().FileCount())
+	}
+}
+
+func TestRetrieveOnly(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "h.md"), "# HNSW\n\nHNSW is a graph based vector index for approximate nearest neighbor search")
+	r, _ := newTestRAG(t)
+	if _, err := r.Index([]string{dir}); err != nil {
+		t.Fatal(err)
+	}
+	sources, err := r.Retrieve("graph vector index", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) == 0 {
+		t.Fatal("expected retrieval results")
+	}
+}
+
 func TestAskStream(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, dir, "x.txt", "vectors are embedded then indexed for retrieval.")
@@ -212,4 +349,19 @@ func mustWrite(t *testing.T, dir, name, content string) {
 
 func chunk(source string, page int, text string) chunker.Chunk {
 	return chunker.Chunk{ID: source + text, Source: source, PageNum: page, Text: text}
+}
+
+func mustWriteFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func bumpModTime(t *testing.T, path string) {
+	t.Helper()
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
 }

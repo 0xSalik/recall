@@ -62,6 +62,31 @@ func New(storePath, embedModel, genModel, llamaPath string) (*RAG, error) {
 	return &RAG{store: st, embedder: embedder, generator: gen}, nil
 }
 
+// NewIndexer opens the store and an embedding backend, but no generator. Use it
+// for commands that write to or read the index without generating text (index,
+// refresh, search), so they don't require the generation binary/model.
+func NewIndexer(storePath, embedModel string) (*RAG, error) {
+	st, err := store.Open(storePath)
+	if err != nil {
+		return nil, err
+	}
+	embedder, err := embed.Detect(embedModel, "llama-embedding", "http://localhost:8081")
+	if err != nil {
+		return nil, err
+	}
+	return &RAG{store: st, embedder: embedder}, nil
+}
+
+// NewManager opens only the store, for management commands (status, list, clear,
+// remove) that touch neither embeddings nor generation.
+func NewManager(storePath string) (*RAG, error) {
+	st, err := store.Open(storePath)
+	if err != nil {
+		return nil, err
+	}
+	return &RAG{store: st}, nil
+}
+
 // NewWithComponents builds a RAG from already-constructed parts. It is the
 // injection point for tests (fake embedder/generator) and for callers that want
 // to share an embedder between indexing and querying.
@@ -83,27 +108,74 @@ type IndexResult struct {
 	Skipped bool
 }
 
-// Index ingests, chunks, embeds, and stores each path (file or directory),
-// skipping files that are already indexed and unchanged. It saves the store
-// once at the end. Per-path results are returned for progress reporting.
+// Index ingests, chunks, embeds, and stores each path (file or directory). Files
+// that are already indexed and unchanged are skipped; files that changed since
+// they were indexed have their old chunks removed before re-indexing (so
+// re-running index never duplicates chunks). The store is saved once at the end.
 func (r *RAG) Index(paths []string) ([]IndexResult, error) {
+	docs, results, err := r.collect(paths)
+	if err != nil {
+		return results, err
+	}
+
+	// Any doc we're about to index that's already in the manifest is a changed
+	// file; drop its stale chunks in a single rebuild before re-adding.
+	var changed []string
+	for _, d := range docs {
+		if r.store.IsIndexed(d.Path) {
+			changed = append(changed, d.Path)
+		}
+	}
+	if len(changed) > 0 {
+		if _, rerr := r.store.RemoveFiles(changed); rerr != nil {
+			return results, rerr
+		}
+	}
+
+	for _, doc := range docs {
+		res, ierr := r.indexDoc(doc)
+		if ierr != nil {
+			return results, ierr
+		}
+		results = append(results, res)
+	}
+	if err := r.store.Save(); err != nil {
+		return results, err
+	}
+	return results, nil
+}
+
+// collect resolves paths into the documents that need (re)indexing, recording
+// skipped (unchanged) files in the returned results. A file reachable via more
+// than one input path (e.g. a directory plus an explicit file) is collected
+// once.
+func (r *RAG) collect(paths []string) ([]ingest.Document, []IndexResult, error) {
+	var docs []ingest.Document
 	var results []IndexResult
+	seen := map[string]bool{}
+	add := func(doc ingest.Document) {
+		if seen[doc.Path] {
+			return
+		}
+		seen[doc.Path] = true
+		docs = append(docs, doc)
+	}
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil {
-			return results, fmt.Errorf("rag: %s: %w", p, err)
+			return nil, results, fmt.Errorf("rag: %s: %w", p, err)
 		}
 		if info.IsDir() {
-			docs, derr := ingest.IngestDir(p, r.exts)
+			dirDocs, derr := ingest.IngestDir(p, r.exts)
 			if derr != nil {
-				return results, derr
+				return nil, results, derr
 			}
-			for _, doc := range docs {
-				res, ierr := r.indexDoc(doc)
-				if ierr != nil {
-					return results, ierr
+			for _, doc := range dirDocs {
+				if r.store.HasFile(doc.Path, doc.Modified) {
+					results = append(results, IndexResult{Path: doc.Path, Skipped: true})
+					continue
 				}
-				results = append(results, res)
+				add(doc)
 			}
 		} else {
 			if r.store.HasFile(p, info.ModTime()) {
@@ -112,19 +184,75 @@ func (r *RAG) Index(paths []string) ([]IndexResult, error) {
 			}
 			doc, ierr := ingest.IngestFile(p)
 			if ierr != nil {
-				return results, ierr
+				return nil, results, ierr
 			}
-			res, ierr := r.indexDoc(doc)
-			if ierr != nil {
-				return results, ierr
-			}
-			results = append(results, res)
+			add(doc)
 		}
 	}
-	if err := r.store.Save(); err != nil {
-		return results, err
+	return docs, results, nil
+}
+
+// ListFiles returns the indexed files with chunk counts.
+func (r *RAG) ListFiles() []store.FileInfo { return r.store.ListFiles() }
+
+// Clear empties the store and persists the change.
+func (r *RAG) Clear() error {
+	r.store.Clear()
+	return r.store.Save()
+}
+
+// Remove deletes everything indexed at target (an exact file or, treating it as
+// a directory, everything beneath it) and persists. It returns the number of
+// chunks removed and the files removed.
+func (r *RAG) Remove(target string) (int, []string, error) {
+	n, files, err := r.store.Remove(target)
+	if err != nil {
+		return n, files, err
 	}
-	return results, nil
+	return n, files, r.store.Save()
+}
+
+// RefreshResult summarizes a refresh: files dropped because they no longer exist
+// on disk, and the per-file results of re-indexing changed/new files.
+type RefreshResult struct {
+	Deleted   []string
+	Reindexed []IndexResult
+}
+
+// Refresh re-syncs the store with the filesystem. It always prunes chunks for
+// indexed files that no longer exist on disk and re-indexes files that changed.
+// If paths are given, it also discovers and indexes new files under them.
+func (r *RAG) Refresh(paths []string) (RefreshResult, error) {
+	var deleted, changed []string
+	for _, f := range r.store.ListFiles() {
+		info, err := os.Stat(f.Path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				deleted = append(deleted, f.Path)
+			}
+			continue
+		}
+		if !r.store.HasFile(f.Path, info.ModTime()) {
+			changed = append(changed, f.Path)
+		}
+	}
+	if len(deleted) > 0 {
+		if _, err := r.store.RemoveFiles(deleted); err != nil {
+			return RefreshResult{}, err
+		}
+	}
+	// Index dedups changed files (removes stale chunks first) and saves the
+	// store, which also persists the deletions above even when nothing is added.
+	reindex := append(append([]string{}, paths...), changed...)
+	results, err := r.Index(reindex)
+	return RefreshResult{Deleted: deleted, Reindexed: results}, err
+}
+
+// Retrieve embeds the question and returns the top-k matching chunks without
+// running generation. Useful for fast, model-free inspection of what the index
+// would feed the LLM.
+func (r *RAG) Retrieve(question string, k int) ([]Source, error) {
+	return r.retrieve(question, k)
 }
 
 // indexDoc chunks, embeds, and stores a single document.

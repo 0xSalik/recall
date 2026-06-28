@@ -20,6 +20,16 @@ func main() {
 		cmd.Index(os.Args[2:])
 	case "query":
 		cmd.Query(os.Args[2:])
+	case "search":
+		cmd.Search(os.Args[2:])
+	case "list":
+		cmd.List(os.Args[2:])
+	case "refresh":
+		cmd.Refresh(os.Args[2:])
+	case "remove", "rm":
+		cmd.Remove(os.Args[2:])
+	case "clear":
+		cmd.Clear(os.Args[2:])
 	case "status":
 		cmd.Status(os.Args[2:])
 	case "serve":
@@ -39,6 +49,11 @@ func usage() {
 Usage:
   recall index <path> [<path> ...]   ingest and index files or directories
   recall query "<question>"          ask a question over the indexed corpus
+  recall search "<query>"            retrieve matching chunks (no generation)
+  recall list                        list indexed files and chunk counts
+  recall refresh [<path> ...]        prune deleted, reindex changed, add new
+  recall remove <path> [<path> ...]  remove a file or folder from the index
+  recall clear                       remove everything from the index
   recall status                      show store statistics
   recall serve                       start the local HTTP UI + JSON/SSE API
 
