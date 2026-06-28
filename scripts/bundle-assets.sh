@@ -40,11 +40,21 @@ trap 'rm -rf "$WORK"' EXIT
 git clone --depth 1 --branch "$LLAMA_REF" https://github.com/ggml-org/llama.cpp "$WORK/llama.cpp" 2>/dev/null \
   || git clone --depth 1 https://github.com/ggml-org/llama.cpp "$WORK/llama.cpp"
 
+# GGML_NATIVE=OFF: do NOT compile for the build machine's exact CPU (the CI
+# runner often has AVX-512); a -march=native binary would crash with "illegal
+# instruction" on users' older CPUs. OFF builds a portable baseline.
 cmake -S "$WORK/llama.cpp" -B "$WORK/build" \
   -DCMAKE_BUILD_TYPE=Release \
   -DGGML_METAL=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF \
+  -DGGML_NATIVE=OFF \
   -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF
-cmake --build "$WORK/build" --config Release -j --target llama-embedding llama-completion
+
+# Cap parallelism: current llama.cpp compiles many large translation units
+# (src/models/*.cpp), and an uncapped -j exhausts RAM on the memory-limited CI
+# runners, which the kernel OOM-kills (the build dies at ~80% and the runner is
+# torn down). JOBS defaults to a conservative 2; override for faster local builds.
+JOBS="${JOBS:-2}"
+cmake --build "$WORK/build" --config Release -j "$JOBS" --target llama-embedding llama-completion
 
 # Binary names/locations have drifted across llama.cpp versions; search for them.
 for tool in llama-embedding llama-completion; do
