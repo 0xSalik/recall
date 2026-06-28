@@ -18,6 +18,8 @@ The **index** itself comes in two flavors behind one interface. `FlatIndex` is a
 
 Download the binary for your platform from the [Releases](https://github.com/0xSalik/recall/releases) page and run it — the llama.cpp engine and the embedding model are baked into the binary, and the generation model is downloaded on first `query`/`serve` (with a progress bar) into `~/.recall`. No PATH, no toolchain, no manual model downloads.
 
+Prebuilt binaries are provided for Linux x86-64, Windows x86-64, and macOS Apple Silicon (`darwin-arm64`). Intel Macs run the Apple Silicon build via Rosetta 2; if you'd rather have a native Intel binary, build from source (below).
+
 ```bash
 # macOS (one-time: clear the download quarantine on unsigned binaries)
 xattr -d com.apple.quarantine ./recall-darwin-arm64 2>/dev/null || true

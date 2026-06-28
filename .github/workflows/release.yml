@@ -21,14 +21,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14      # Apple Silicon
+          - os: macos-14      # Apple Silicon (Intel Macs run this via Rosetta 2)
             target: darwin-arm64
             goos: darwin
             goarch: arm64
-          - os: macos-13      # Intel
-            target: darwin-amd64
-            goos: darwin
-            goarch: amd64
           - os: ubuntu-latest
             target: linux-amd64
             goos: linux
