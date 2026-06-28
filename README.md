@@ -14,12 +14,27 @@ On the **read path** (`recall query`), the question is embedded with the same mo
 
 The **index** itself comes in two flavors behind one interface. `FlatIndex` is an exact brute-force cosine scan — O(n) per query, always correct, and the ground-truth baseline used to measure the approximate index. `HNSW` is a hierarchical navigable small-world graph built from scratch (Malkov & Yashunin, 2018): a layered graph where upper layers are sparse express lanes and layer 0 is dense. Construction assigns each node a random level, greedily descends to that level, then does an `ef`-bounded beam search at each remaining layer to pick neighbors via the selection *heuristic* (keep an edge only if the candidate is closer to the new node than to any already-selected neighbor — this keeps the graph navigable and is the difference between ~78% and ~94% recall@5). Layer 0 is intentionally denser (`Mmax0 = 2*M`). The graph stores neighbors as integer indices, not pointers, so it gob-serializes without custom marshaling.
 
-## Setup
+## Install (prebuilt, zero setup)
+
+Download the binary for your platform from the [Releases](https://github.com/0xSalik/recall/releases) page and run it — the llama.cpp engine and the embedding model are baked into the binary, and the generation model is downloaded on first `query`/`serve` (with a progress bar) into `~/.recall`. No PATH, no toolchain, no manual model downloads.
+
+```bash
+# macOS (one-time: clear the download quarantine on unsigned binaries)
+xattr -d com.apple.quarantine ./recall-darwin-arm64 2>/dev/null || true
+chmod +x ./recall-darwin-arm64
+./recall-darwin-arm64 serve
+```
+
+Resolution order for the engine and models is: explicit flag (`--bin`/`--embed`/`--gen`) → cache in `~/.recall` → copy embedded in the binary → download. So a prebuilt binary "just works", while a source build (below) transparently falls back to downloading what it needs on first use.
+
+## Setup (from source)
 
 Prerequisites:
 
 - Go 1.21+
 - A C/C++ toolchain to build llama.cpp (or prebuilt llama.cpp binaries on your `PATH`)
+
+A plain `make build` produces a small binary that downloads the engine model(s) on first use. To produce a fully self-contained, one-click binary like the release assets, run `make bundle` (needs `cmake` + a C/C++ toolchain): it builds CPU-only llama.cpp, embeds the engine binaries and the embedding model via `//go:embed` behind the `bundle` build tag, and leaves the large generation model to be fetched on first use (keeping the artifact under GitHub's 2 GB asset limit). CI does this per-platform in `.github/workflows/release.yml`.
 
 Build llama.cpp (skip if you already have the binaries):
 
@@ -46,12 +61,12 @@ straight at the binary directory with `--bin` on any command:
 `--bin` is prepended to `PATH` for both the embedding and generation binaries, so
 it's the simplest way to run without editing your shell environment.
 
-Download the models:
+Download the models (optional — recall fetches them automatically on first use into `~/.recall/models`; use this only to pre-seed or to keep them in the repo dir):
 
 ```bash
 make models
-# embedding: nomic-embed-text-v1.5 Q4_K_M (~90MB)
-# generation: Phi-3-mini-4k-instruct Q4_K_M (~2.2GB)
+# embedding: nomic-embed-text-v1.5 Q4_K_M (~84MB)
+# generation: Phi-3-mini-4k-instruct Q4_K_M (~2.3GB)
 ```
 
 Build recall:
