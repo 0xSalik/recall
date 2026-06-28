@@ -2,6 +2,9 @@ models/
 vendor/
 third_party/
 bin/
+# Release-only embedded assets are dropped in by CI; keep the dir, not its contents.
+internal/bootstrap/assets/*
+!internal/bootstrap/assets/.gitkeep
 web/recall.wasm
 .DS_Store
 .recall/

@@ -1,0 +1,4 @@
+# This directory is populated by CI for "bundle" release builds:
+#   assets/bin/llama-embedding, assets/bin/llama-completion (per platform)
+#   assets/models/<embedding model>.gguf
+# It is intentionally empty in the repo so the default build stays small.
