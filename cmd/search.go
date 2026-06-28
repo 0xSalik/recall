@@ -14,17 +14,17 @@ import (
 func Search(args []string) {
 	fs := flag.NewFlagSet("search", flag.ExitOnError)
 	store := fs.String("store", defaultStoreDir(), "path to store directory")
-	embedModel := fs.String("embed", defaultEmbedModel, "embedding model path")
+	embedModel := fs.String("embed", "", modelFlagHelp)
 	bin := fs.String("bin", "", "directory containing llama.cpp binaries (prepended to PATH)")
 	topK := fs.Int("k", 5, "number of chunks to return")
 	rest := parseArgs(fs, args)
 	if len(rest) == 0 {
 		fail("search requires a query")
 	}
-	addBinToPath(*bin)
+	resolveEngine(*bin)
 	query := strings.Join(rest, " ")
 
-	r, err := rag.NewIndexer(*store, *embedModel)
+	r, err := rag.NewIndexer(*store, resolveEmbedModel(*embedModel))
 	if err != nil {
 		fail("%v", err)
 	}

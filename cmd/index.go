@@ -12,16 +12,16 @@ import (
 func Index(args []string) {
 	fs := flag.NewFlagSet("index", flag.ExitOnError)
 	store := fs.String("store", defaultStoreDir(), "path to store directory")
-	embedModel := fs.String("embed", defaultEmbedModel, "embedding model path")
+	embedModel := fs.String("embed", "", modelFlagHelp)
 	bin := fs.String("bin", "", "directory containing llama.cpp binaries (prepended to PATH)")
 	ext := fs.String("ext", "", "comma-separated extensions to include (default: all supported)")
 	paths := parseArgs(fs, args)
 	if len(paths) == 0 {
 		fail("index requires at least one path")
 	}
-	addBinToPath(*bin)
+	resolveEngine(*bin)
 
-	r, err := rag.NewIndexer(*store, *embedModel)
+	r, err := rag.NewIndexer(*store, resolveEmbedModel(*embedModel))
 	if err != nil {
 		fail("%v", err)
 	}

@@ -24,14 +24,14 @@ func Serve(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "localhost:8080", "listen address")
 	store := fs.String("store", defaultStoreDir(), "path to store directory")
-	embedModel := fs.String("embed", defaultEmbedModel, "embedding model path")
-	genModel := fs.String("gen", defaultGenModel, "generation model path")
+	embedModel := fs.String("embed", "", modelFlagHelp)
+	genModel := fs.String("gen", "", modelFlagHelp)
 	llama := fs.String("llama", "", "path to generation binary (default: search PATH)")
 	bin := fs.String("bin", "", "directory containing llama.cpp binaries (prepended to PATH)")
 	fs.Parse(args)
-	addBinToPath(*bin)
+	resolveEngine(*bin)
 
-	r, err := rag.New(*store, *embedModel, *genModel, *llama)
+	r, err := rag.New(*store, resolveEmbedModel(*embedModel), resolveGenModel(*genModel), *llama)
 	if err != nil {
 		fail("%v", err)
 	}

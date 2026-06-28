@@ -14,8 +14,8 @@ import (
 func Query(args []string) {
 	fs := flag.NewFlagSet("query", flag.ExitOnError)
 	store := fs.String("store", defaultStoreDir(), "path to store directory")
-	embedModel := fs.String("embed", defaultEmbedModel, "embedding model path")
-	genModel := fs.String("gen", defaultGenModel, "generation model path")
+	embedModel := fs.String("embed", "", modelFlagHelp)
+	genModel := fs.String("gen", "", modelFlagHelp)
 	llama := fs.String("llama", "", "path to generation binary (default: search PATH)")
 	bin := fs.String("bin", "", "directory containing llama.cpp binaries (prepended to PATH)")
 	k := fs.Int("k", 5, "number of chunks to retrieve")
@@ -25,9 +25,9 @@ func Query(args []string) {
 	if question == "" {
 		fail("query requires a question")
 	}
-	addBinToPath(*bin)
+	resolveEngine(*bin)
 
-	r, err := rag.New(*store, *embedModel, *genModel, *llama)
+	r, err := rag.New(*store, resolveEmbedModel(*embedModel), resolveGenModel(*genModel), *llama)
 	if err != nil {
 		fail("%v", err)
 	}

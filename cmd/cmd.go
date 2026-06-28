@@ -9,22 +9,50 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/0xSalik/recall/internal/bootstrap"
 )
 
-// Defaults for flags shared across commands.
-const (
-	defaultEmbedModel = "models/nomic-embed-text-v1.5.Q4_K_M.gguf"
-	defaultGenModel   = "models/phi-3-mini-4k-instruct.Q4_K_M.gguf"
-)
+// modelFlagHelp documents the model flags, which now default to empty: an empty
+// value means "resolve automatically" (cache -> embedded -> download).
+const modelFlagHelp = "model path (default: managed automatically and fetched on first use)"
 
 // defaultStoreDir is ~/.recall, falling back to ./.recall if the home dir is
 // unavailable.
 func defaultStoreDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".recall"
+	return bootstrap.Home()
+}
+
+// resolveEngine makes the llama.cpp binaries discoverable: it prefers an
+// embedded/cached copy (bundle builds), then the user's --bin override, then the
+// ambient PATH. The override is applied last so it takes precedence.
+func resolveEngine(binFlag string) {
+	if dir, err := bootstrap.EnsureEngine(); err == nil && dir != "" {
+		addBinToPath(dir)
 	}
-	return filepath.Join(home, ".recall")
+	addBinToPath(binFlag)
+}
+
+// resolveEmbedModel returns a usable embedding-model path, downloading it (with
+// a progress bar) if necessary. An empty flagVal means "managed automatically".
+func resolveEmbedModel(flagVal string) string {
+	return resolveModel("embedding model", flagVal, bootstrap.EnsureEmbedModel)
+}
+
+// resolveGenModel returns a usable generation-model path. With no override and
+// no cached/embedded copy this triggers the large first-run download.
+func resolveGenModel(flagVal string) string {
+	return resolveModel("generation model", flagVal, bootstrap.EnsureGenModel)
+}
+
+func resolveModel(label, flagVal string, ensure func(string, bootstrap.ProgressFunc) (string, error)) string {
+	progress, done := bootstrap.CLIProgress(os.Stderr, "  "+label)
+	path, err := ensure(flagVal, progress)
+	done()
+	if err != nil {
+		fail("%v", err)
+	}
+	return path
 }
 
 // splitExts parses a comma-separated extension list (e.g. ".md,.pdf,go") into a

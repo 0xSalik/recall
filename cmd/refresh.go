@@ -13,12 +13,12 @@ import (
 func Refresh(args []string) {
 	fs := flag.NewFlagSet("refresh", flag.ExitOnError)
 	store := fs.String("store", defaultStoreDir(), "path to store directory")
-	embedModel := fs.String("embed", defaultEmbedModel, "embedding model path")
+	embedModel := fs.String("embed", "", modelFlagHelp)
 	bin := fs.String("bin", "", "directory containing llama.cpp binaries (prepended to PATH)")
 	paths := parseArgs(fs, args)
-	addBinToPath(*bin)
+	resolveEngine(*bin)
 
-	r, err := rag.NewIndexer(*store, *embedModel)
+	r, err := rag.NewIndexer(*store, resolveEmbedModel(*embedModel))
 	if err != nil {
 		fail("%v", err)
 	}
