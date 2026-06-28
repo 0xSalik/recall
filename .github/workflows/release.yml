@@ -1,0 +1,90 @@
+name: release
+
+# Builds self-contained, one-click binaries for each platform and attaches them
+# to the GitHub Release. Each binary embeds the llama.cpp engine + the embedding
+# model; the generation model is downloaded on first use.
+#
+# Trigger by pushing a tag like v0.1.0, or run manually from the Actions tab.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14      # Apple Silicon
+            target: darwin-arm64
+            goos: darwin
+            goarch: arm64
+          - os: macos-13      # Intel
+            target: darwin-amd64
+            goos: darwin
+            goarch: amd64
+          - os: ubuntu-latest
+            target: linux-amd64
+            goos: linux
+            goarch: amd64
+          - os: windows-latest
+            target: windows-amd64
+            goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+
+      - name: Install build deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+
+      - name: Install build deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake
+
+      # Windows runners already ship cmake + MSVC.
+
+      - name: Bundle engine + embedding model
+        shell: bash
+        env:
+          LLAMA_REF: master
+        run: bash scripts/bundle-assets.sh
+
+      - name: Build self-contained binary
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          out="recall-${{ matrix.target }}"
+          [ "${{ matrix.goos }}" = "windows" ] && out="$out.exe"
+          go build -tags bundle -trimpath -ldflags "-s -w" -o "$out" .
+          ls -lh "$out"
+
+      # NOTE: macOS binaries are unsigned here. For a friction-free download,
+      # add an "Import Code-Signing Certificate" + codesign + notarize step
+      # (requires an Apple Developer account). Without it, users must run
+      # `xattr -d com.apple.quarantine ./recall-darwin-*` once.
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: recall-${{ matrix.target }}*
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: recall-${{ matrix.target }}
+          path: recall-${{ matrix.target }}*
